@@ -1,175 +1,231 @@
-# Description: This file contains the extensions API endpoints.
-
 from http import HTTPStatus
+from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
-from lnbits.core.crud import get_user
+from fastapi import APIRouter, Depends, HTTPException
+from lnbits.core.crud import get_user, get_wallet
 from lnbits.core.models import WalletTypeInfo
-from lnbits.core.services import create_invoice
 from lnbits.decorators import require_admin_key, require_invoice_key
-from starlette.exceptions import HTTPException
 
 from .crud import (
-    create_hedge,
-    delete_hedge,
-    get_hedge,
-    get_hedges,
-    update_hedge,
+    create_event,
+    delete_config,
+    get_all_enabled_hedged_wallet_ids,
+    get_config,
+    get_events,
+    get_hedged_wallets,
+    save_config,
+    set_hedged_wallets,
 )
-from .helpers import lnurler
-from .models import CreateHedgeData, CreatePayment, Hedge
+from .lnmarkets import LNMarketsClient, LNMarketsError
+from .models import HedgeConfig, HedgeConfigData, HedgeEvent, HedgeStatus, WalletStatus
 
 hedge_api_router = APIRouter()
 
-# Note: we add the lnurl params to returns so the links
-# are generated in the Hedge model in models.py
 
-## Get all the records belonging to the user
+# ── Config (globální LNM nastavení) ──────────────────────────────────────────
+
+@hedge_api_router.get("/api/v1/config")
+async def api_get_config(
+    wallet: WalletTypeInfo = Depends(require_admin_key),
+) -> Optional[dict]:
+    config = await get_config()
+    if not config:
+        return None
+    return {
+        "lnm_key": config.lnm_key[:6] + "..." if config.lnm_key else "",
+        "lnm_secret": "***",
+        "lnm_passphrase": "***",
+        "leverage": config.leverage,
+        "testnet": config.testnet,
+        "last_synced": config.last_synced,
+        "last_error": config.last_error,
+    }
 
 
-@hedge_api_router.get("/api/v1/myex")
-async def api_hedges(
-    req: Request,  # Withoutthe lnurl stuff this wouldnt be needed
+@hedge_api_router.post("/api/v1/config", status_code=HTTPStatus.CREATED)
+async def api_save_config(
+    data: HedgeConfigData,
+    wallet: WalletTypeInfo = Depends(require_admin_key),
+) -> dict:
+    if data.leverage < 1 or data.leverage > 10:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail="Leverage musí být mezi 1 a 10",
+        )
+    try:
+        client = LNMarketsClient(
+            key=data.lnm_key,
+            secret=data.lnm_secret,
+            passphrase=data.lnm_passphrase,
+            testnet=data.testnet,
+        )
+        await client.get_user()
+    except LNMarketsError as e:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail=f"Nepodařilo se ověřit LNMarkets API klíče: {e}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail=f"Chyba připojení k LNMarkets: {e}",
+        )
+
+    await save_config(data)
+    return {"status": "ok"}
+
+
+@hedge_api_router.delete("/api/v1/config", status_code=HTTPStatus.NO_CONTENT)
+async def api_delete_config(
+    wallet: WalletTypeInfo = Depends(require_admin_key),
+) -> None:
+    await delete_config()
+
+
+# ── Hedgované peněženky ───────────────────────────────────────────────────────
+
+@hedge_api_router.get("/api/v1/wallets")
+async def api_get_wallets(
+    wallet: WalletTypeInfo = Depends(require_admin_key),
+) -> list[str]:
+    """Vrátí seznam wallet_id které jsou momentálně hedgovány."""
+    return await get_all_enabled_hedged_wallet_ids()
+
+
+@hedge_api_router.put("/api/v1/wallets")
+async def api_set_wallets(
+    wallet_ids: list[str],
+    wallet: WalletTypeInfo = Depends(require_admin_key),
+) -> dict:
+    """Nahradí celý seznam hedgovaných walletů."""
+    config = await get_config()
+    if not config:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail="Nejprve nastavte LNMarkets API klíče",
+        )
+    await set_hedged_wallets(wallet_ids)
+    return {"status": "ok", "hedged_wallets": wallet_ids}
+
+
+# ── Status ───────────────────────────────────────────────────────────────────
+
+@hedge_api_router.get("/api/v1/status")
+async def api_get_status(
     wallet: WalletTypeInfo = Depends(require_invoice_key),
-) -> list[Hedge]:
-    wallet_ids = [wallet.wallet.id]
-    user = await get_user(wallet.wallet.user)
-    wallet_ids = user.wallet_ids if user else []
-    hedges = await get_hedges(wallet_ids)
-
-    # Populate lnurlpay and lnurlwithdraw for each instance.
-    # Without the lnurl stuff this wouldnt be needed.
-    for myex in hedges:
-        myex.lnurlpay = lnurler(myex.id, "hedge.api_lnurl_pay", req)
-        myex.lnurlwithdraw = lnurler(myex.id, "hedge.api_lnurl_withdraw", req)
-
-    return hedges
-
-
-## Get a single record
-
-
-@hedge_api_router.get(
-    "/api/v1/myex/{hedge_id}",
-    dependencies=[Depends(require_invoice_key)],
-)
-async def api_hedge(hedge_id: str, req: Request) -> Hedge:
-    myex = await get_hedge(hedge_id)
-    if not myex:
+) -> HedgeStatus:
+    config = await get_config()
+    if not config:
         raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND, detail="Hedge does not exist."
-        )
-    # Populate lnurlpay and lnurlwithdraw.
-    # Without the lnurl stuff this wouldnt be needed.
-    myex.lnurlpay = lnurler(myex.id, "hedge.api_lnurl_pay", req)
-    myex.lnurlwithdraw = lnurler(myex.id, "hedge.api_lnurl_withdraw", req)
-
-    return myex
-
-
-## Create a new record
-
-
-@hedge_api_router.post("/api/v1/myex", status_code=HTTPStatus.CREATED)
-async def api_hedge_create(
-    req: Request,  # Withoutthe lnurl stuff this wouldnt be needed
-    data: CreateHedgeData,
-    wallet: WalletTypeInfo = Depends(require_admin_key),
-) -> Hedge:
-    myex = await create_hedge(data)
-
-    # Populate lnurlpay and lnurlwithdraw.
-    # Withoutthe lnurl stuff this wouldnt be needed.
-    myex.lnurlpay = lnurler(myex.id, "hedge.api_lnurl_pay", req)
-    myex.lnurlwithdraw = lnurler(myex.id, "hedge.api_lnurl_withdraw", req)
-
-    return myex
-
-
-## update a record
-
-
-@hedge_api_router.put("/api/v1/myex/{hedge_id}")
-async def api_hedge_update(
-    req: Request,  # Withoutthe lnurl stuff this wouldnt be needed
-    data: CreateHedgeData,
-    hedge_id: str,
-    wallet: WalletTypeInfo = Depends(require_admin_key),
-) -> Hedge:
-    myex = await get_hedge(hedge_id)
-    if not myex:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND, detail="Hedge does not exist."
+            status_code=HTTPStatus.NOT_FOUND,
+            detail="Hedge není nakonfigurován",
         )
 
-    if wallet.wallet.id != myex.wallet:
+    hedged_ids = await get_all_enabled_hedged_wallet_ids()
+
+    try:
+        client = LNMarketsClient(
+            key=config.lnm_key,
+            secret=config.lnm_secret,
+            passphrase=config.lnm_passphrase,
+            testnet=config.testnet,
+        )
+        price   = await client.get_price()
+        summary = await client.get_account_summary()
+    except LNMarketsError as e:
         raise HTTPException(
-            status_code=HTTPStatus.FORBIDDEN, detail="Not your Hedge."
+            status_code=HTTPStatus.BAD_GATEWAY,
+            detail=f"LNMarkets API nedostupné: {e}",
         )
 
-    for key, value in data.dict().items():
-        setattr(myex, key, value)
+    total_sats = 0
+    for wid in hedged_ids:
+        w = await get_wallet(wid)
+        if w:
+            total_sats += w.balance_msat // 1000
 
-    myex = await update_hedge(data)
+    total_usd = total_sats / 100_000_000 * price
+    drift_usd = total_usd - summary.total_short_usd
+    drift_pct = (drift_usd / total_usd * 100) if total_usd > 0 else 0.0
 
-    # Populate lnurlpay and lnurlwithdraw.
-    # Without the lnurl stuff this wouldnt be needed.
-    myex.lnurlpay = lnurler(myex.id, "hedge.api_lnurl_pay", req)
-    myex.lnurlwithdraw = lnurler(myex.id, "hedge.api_lnurl_withdraw", req)
-
-    return myex
-
-
-## Delete a record
-
-
-@hedge_api_router.delete("/api/v1/myex/{hedge_id}")
-async def api_hedge_delete(
-    hedge_id: str, wallet: WalletTypeInfo = Depends(require_admin_key)
-):
-    myex = await get_hedge(hedge_id)
-
-    if not myex:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND, detail="Hedge does not exist."
-        )
-
-    if myex.wallet != wallet.wallet.id:
-        raise HTTPException(
-            status_code=HTTPStatus.FORBIDDEN, detail="Not your Hedge."
-        )
-
-    await delete_hedge(hedge_id)
-    return
-
-
-# ANY OTHER ENDPOINTS YOU NEED
-
-## This endpoint creates a payment
-
-
-@hedge_api_router.post("/api/v1/myex/payment", status_code=HTTPStatus.CREATED)
-async def api_hedge_create_invoice(data: CreatePayment) -> dict:
-    hedge = await get_hedge(data.hedge_id)
-
-    if not hedge:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND, detail="Hedge does not exist."
-        )
-
-    # we create a payment and add some tags,
-    # so tasks.py can grab the payment once its paid
-
-    payment = await create_invoice(
-        wallet_id=hedge.wallet,
-        amount=data.amount,
-        memo=(
-            f"{data.memo} to {hedge.name}" if data.memo else f"{hedge.name}"
-        ),
-        extra={
-            "tag": "hedge",
-            "amount": data.amount,
-        },
+    return HedgeStatus(
+        configured=True,
+        lnm_account_balance_sats=summary.balance,
+        btc_price=price,
+        total_wallet_sats=total_sats,
+        total_wallet_usd=round(total_usd, 2),
+        lnm_short_usd=round(summary.total_short_usd, 2),
+        drift_usd=round(drift_usd, 2),
+        drift_pct=round(drift_pct, 2),
+        hedged_wallets=hedged_ids,
+        last_synced=config.last_synced,
+        last_error=config.last_error,
     )
 
-    return {"payment_hash": payment.payment_hash, "payment_request": payment.bolt11}
+
+@hedge_api_router.get("/api/v1/wallet-statuses")
+async def api_wallet_statuses(
+    wallet: WalletTypeInfo = Depends(require_invoice_key),
+) -> list[WalletStatus]:
+    """Vrátí balance každé hedgované peněženky."""
+    config = await get_config()
+    if not config:
+        return []
+
+    hedged_ids = await get_all_enabled_hedged_wallet_ids()
+
+    try:
+        client = LNMarketsClient(
+            key=config.lnm_key,
+            secret=config.lnm_secret,
+            passphrase=config.lnm_passphrase,
+            testnet=config.testnet,
+        )
+        price = await client.get_price()
+    except Exception:
+        price = 0.0
+
+    result = []
+    for wid in hedged_ids:
+        w = await get_wallet(wid)
+        if w:
+            sats = w.balance_msat // 1000
+            result.append(WalletStatus(
+                wallet_id=wid,
+                wallet_name=w.name,
+                balance_sats=sats,
+                balance_usd=round(sats / 100_000_000 * price, 2) if price else 0.0,
+                enabled=True,
+            ))
+    return result
+
+
+# ── Manual sync ───────────────────────────────────────────────────────────────
+
+@hedge_api_router.post("/api/v1/sync")
+async def api_manual_sync(
+    wallet: WalletTypeInfo = Depends(require_admin_key),
+) -> dict:
+    from .tasks import reconcile_wallet
+    import asyncio
+
+    config = await get_config()
+    if not config:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail="Hedge není nakonfigurován",
+        )
+
+    hedged_ids = await get_all_enabled_hedged_wallet_ids()
+    for wid in hedged_ids:
+        asyncio.create_task(reconcile_wallet(wid))
+    return {"status": "ok"}
+
+
+# ── Events ────────────────────────────────────────────────────────────────────
+
+@hedge_api_router.get("/api/v1/events")
+async def api_get_events(
+    wallet: WalletTypeInfo = Depends(require_invoice_key),
+) -> list[HedgeEvent]:
+    return await get_events(limit=100)

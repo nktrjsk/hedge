@@ -2,241 +2,270 @@ window.app = Vue.createApp({
   el: '#vue',
   mixins: [windowMixin],
   delimiters: ['${', '}'],
+
   data: function () {
     return {
-      invoiceAmount: 10,
-      qrValue: '',
-      myex: [],
-      myexTable: {
-        columns: [
-          {name: 'id', align: 'left', label: 'ID', field: 'id'},
-          {name: 'name', align: 'left', label: 'Name', field: 'name'},
-          {
-            name: 'wallet',
-            align: 'left',
-            label: 'Wallet',
-            field: 'wallet'
-          },
-          {
-            name: 'total',
-            align: 'left',
-            label: 'Total sent/received',
-            field: 'total'
-          }
-        ],
-        pagination: {
-          rowsPerPage: 10
-        }
+      config: null,
+      status: null,
+      walletStatuses: [],
+      events: [],
+      selectedWalletIds: [],
+      showSecrets: false,
+
+      configDialog: false,
+      walletsDialog: false,
+
+      statusLoading: false,
+      eventsLoading: false,
+      configSaving: false,
+      walletsSaving: false,
+      syncLoading: false,
+
+      configForm: {
+        lnm_key: '',
+        lnm_secret: '',
+        lnm_passphrase: '',
+        leverage: 2,
+        testnet: false
       },
-      formDialog: {
-        show: false,
-        data: {},
-        advanced: {}
-      },
-      urlDialog: {
-        show: false,
-        data: {}
-      }
+
+      eventsColumns: [
+        {
+          name: 'created_at', label: 'Čas', field: 'created_at', align: 'left', sortable: true,
+          format: function (val) { return new Date(val).toLocaleString('cs-CZ') }
+        },
+        {name: 'event_type', label: 'Typ', field: 'event_type', align: 'left'},
+        {name: 'wallet_id', label: 'Wallet', field: 'wallet_id', align: 'left',
+          format: function (val) { return val ? val.substring(0, 8) + '...' : '-' }},
+        {name: 'sats_delta', label: 'Sats \u0394', field: 'sats_delta', align: 'right'},
+        {
+          name: 'usd_price', label: 'BTC/USD', field: 'usd_price', align: 'right',
+          format: function (val) { return val > 0 ? '$' + Math.round(val).toLocaleString('cs-CZ') : '-' }
+        },
+        {name: 'usd_notional_delta', label: 'USD \u0394', field: 'usd_notional_delta', align: 'right'},
+        {name: 'status', label: 'Stav', field: 'status', align: 'center'},
+        {name: 'error_msg', label: '', field: 'error_msg', align: 'center'}
+      ],
+
+      _statusInterval: null
     }
   },
 
-  ///////////////////////////////////////////////////
-  ////////////////METHODS FUNCTIONS//////////////////
-  ///////////////////////////////////////////////////
+  computed: {
+    driftClass: function () {
+      if (!this.status) return ''
+      var d = Math.abs(this.status.drift_pct)
+      if (d < 2) return ''
+      if (d < 5) return 'bg-warning text-white'
+      return 'bg-negative text-white'
+    },
+
+    activeWallet: function () {
+      return this.g.user.wallets.length > 0 ? this.g.user.wallets[0] : null
+    }
+  },
+
+  mounted: function () {
+    this.loadConfig()
+    this.loadEvents()
+    var self = this
+    this._statusInterval = setInterval(function () {
+      if (self.config) {
+        self.loadStatus()
+        self.loadWalletStatuses()
+      }
+    }, 30000)
+  },
+
+  beforeUnmount: function () {
+    if (this._statusInterval) clearInterval(this._statusInterval)
+  },
 
   methods: {
-    async closeFormDialog() {
-      this.formDialog.show = false
-      this.formDialog.data = {}
-    },
-    async getHedges() {
-      await LNbits.api
-        .request(
-          'GET',
-          '/hedge/api/v1/myex',
-          this.g.user.wallets[0].inkey
-        )
-        .then(response => {
-          this.myex = response.data
-        })
-        .catch(err => {
-          LNbits.utils.notifyApiError(err)
-        })
-    },
-    async sendHedgeData() {
-      const data = {
-        name: this.formDialog.data.name,
-        lnurlwithdrawamount: this.formDialog.data.lnurlwithdrawamount,
-        lnurlpayamount: this.formDialog.data.lnurlpayamount
-      }
-      const wallet = _.findWhere(this.g.user.wallets, {
-        id: this.formDialog.data.wallet
-      })
-      if (this.formDialog.data.id) {
-        data.id = this.formDialog.data.id
-        data.total = this.formDialog.data.total
-        await this.updateHedge(wallet, data)
-      } else {
-        await this.createHedge(wallet, data)
-      }
+    adminKey: function () {
+      return this.activeWallet ? this.activeWallet.adminkey : null
     },
 
-    async updateHedgeForm(tempId) {
-      const hedge = _.findWhere(this.myex, {id: tempId})
-      this.formDialog.data = {
-        ...hedge
-      }
-      if (this.formDialog.data.tip_wallet != '') {
-        this.formDialog.advanced.tips = true
-      }
-      if (this.formDialog.data.withdrawlimit >= 1) {
-        this.formDialog.advanced.otc = true
-      }
-      this.formDialog.show = true
-    },
-    async createHedge(wallet, data) {
-      data.wallet = wallet.id
-      await LNbits.api
-        .request('POST', '/hedge/api/v1/myex', wallet.adminkey, data)
-        .then(response => {
-          this.myex.push(response.data)
-          this.closeFormDialog()
-        })
-        .catch(error => {
-          LNbits.utils.notifyApiError(error)
-        })
+    inKey: function () {
+      return this.activeWallet ? this.activeWallet.inkey : null
     },
 
-    async updateHedge(wallet, data) {
-      data.wallet = wallet.id
-      await LNbits.api
-        .request(
-          'PUT',
-          `/hedge/api/v1/myex/${data.id}`,
-          wallet.adminkey,
-          data
-        )
-        .then(response => {
-          this.myex = _.reject(this.myex, obj => obj.id == data.id)
-          this.myex.push(response.data)
-          this.closeFormDialog()
-        })
-        .catch(error => {
-          LNbits.utils.notifyApiError(error)
-        })
-    },
-    async deleteHedge(tempId) {
-      var hedge = _.findWhere(this.myex, {id: tempId})
-      const wallet = _.findWhere(this.g.user.wallets, {
-        id: hedge.wallet
-      })
-      await LNbits.utils
-        .confirmDialog('Are you sure you want to delete this Hedge?')
-        .onOk(function () {
-          LNbits.api
-            .request(
-              'DELETE',
-              '/hedge/api/v1/myex/' + tempId,
-              wallet.adminkey
-            )
-            .then(() => {
-              this.myex = _.reject(this.myex, function (obj) {
-                return obj.id === hedge.id
-              })
-            })
-            .catch(error => {
-              LNbits.utils.notifyApiError(error)
-            })
-        })
+    openConfigDialog: function () {
+      if (this.config) {
+        this.configForm.leverage = this.config.leverage
+        this.configForm.testnet = this.config.testnet
+      }
+      this.configForm.lnm_key = ''
+      this.configForm.lnm_secret = ''
+      this.configForm.lnm_passphrase = ''
+      this.configDialog = true
     },
 
-    async exportCSV() {
-      await LNbits.utils.exportCSV(this.myexTable.columns, this.myex)
+    openWalletsDialog: function () {
+      this.walletsDialog = true
     },
-    async itemsArray(tempId) {
-      const hedge = _.findWhere(this.myex, {id: tempId})
-      return [...hedge.itemsMap.values()]
-    },
-    async openformDialog(id) {
-      const [tempId, itemId] = id.split(':')
-      const hedge = _.findWhere(this.myex, {id: tempId})
-      if (itemId) {
-        const item = hedge.itemsMap.get(id)
-        this.formDialog.data = {
-          ...item,
-          hedge: tempId
+
+    loadConfig: async function () {
+      var key = this.adminKey()
+      if (!key) return
+      try {
+        var resp = await LNbits.api.request('GET', '/hedge/api/v1/config', key)
+        this.config = resp.data
+        if (this.config) {
+          await this.loadStatus()
+          await this.loadHedgedWallets()
+          await this.loadWalletStatuses()
+        } else {
+          this.configDialog = true
         }
-      } else {
-        this.formDialog.data.hedge = tempId
+      } catch (err) {
+        if (err.response && err.response.status === 404) {
+          this.config = null
+          this.configDialog = true
+        } else {
+          LNbits.utils.notifyApiError(err)
+        }
       }
-      this.formDialog.data.currency = hedge.currency
-      this.formDialog.show = true
     },
-    async openUrlDialog(tempid) {
-      this.urlDialog.data = _.findWhere(this.myex, {id: tempid})
-      this.qrValue = this.urlDialog.data.lnurlpay
 
-      // Connecting to our websocket fired in tasks.py
-      this.connectWebocket(this.urlDialog.data.id)
+    loadStatus: async function () {
+      var key = this.inKey()
+      if (!key || !this.config) return
+      this.statusLoading = true
+      try {
+        var resp = await LNbits.api.request('GET', '/hedge/api/v1/status', key)
+        this.status = resp.data
+      } catch (err) {
+        if (!err.response || err.response.status !== 404) {
+          LNbits.utils.notifyApiError(err)
+        }
+      } finally {
+        this.statusLoading = false
+      }
+    },
 
-      this.urlDialog.show = true
-    },
-    async closeformDialog() {
-      this.formDialog.show = false
-      this.formDialog.data = {}
-    },
-    async createInvoice(tempid) {
-      ///////////////////////////////////////////////////
-      ///Simple call to the api to create an invoice/////
-      ///////////////////////////////////////////////////
-      myex = _.findWhere(this.myex, {id: tempid})
-      const wallet = _.findWhere(this.g.user.wallets, {id: myex.wallet})
-      const data = {
-        hedge_id: tempid,
-        amount: this.invoiceAmount,
-        memo: 'Hedge - ' + myex.name
+    loadHedgedWallets: async function () {
+      var key = this.adminKey()
+      if (!key) return
+      try {
+        var resp = await LNbits.api.request('GET', '/hedge/api/v1/wallets', key)
+        this.selectedWalletIds = resp.data
+      } catch (err) {
+        LNbits.utils.notifyApiError(err)
       }
-      await LNbits.api
-        .request('POST', `/hedge/api/v1/myex/payment`, wallet.inkey, data)
-        .then(response => {
-          this.qrValue = response.data.payment_request
-          this.connectWebocket(wallet.inkey)
-        })
-        .catch(error => {
-          LNbits.utils.notifyApiError(error)
-        })
     },
-    connectWebocket(hedge_id) {
-      //////////////////////////////////////////////////
-      ///wait for pay action to happen and do a thing////
-      ///////////////////////////////////////////////////
-      if (location.protocol !== 'http:') {
-        localUrl =
-          'wss://' +
-          document.domain +
-          ':' +
-          location.port +
-          '/api/v1/ws/' +
-          hedge_id
-      } else {
-        localUrl =
-          'ws://' +
-          document.domain +
-          ':' +
-          location.port +
-          '/api/v1/ws/' +
-          hedge_id
+
+    loadWalletStatuses: async function () {
+      var key = this.inKey()
+      if (!key || !this.config) return
+      try {
+        var resp = await LNbits.api.request('GET', '/hedge/api/v1/wallet-statuses', key)
+        this.walletStatuses = resp.data
+      } catch (err) {
+        // tiše ignorujeme
       }
-      this.connection = new WebSocket(localUrl)
-      this.connection.onmessage = () => {
-        this.urlDialog.show = false
+    },
+
+    loadEvents: async function () {
+      var key = this.inKey()
+      if (!key) return
+      this.eventsLoading = true
+      try {
+        var resp = await LNbits.api.request('GET', '/hedge/api/v1/events', key)
+        this.events = resp.data
+      } catch (err) {
+        if (!err.response || err.response.status !== 404) {
+          LNbits.utils.notifyApiError(err)
+        }
+      } finally {
+        this.eventsLoading = false
       }
+    },
+
+    saveConfig: async function () {
+      var key = this.adminKey()
+      if (!key) return
+      this.configSaving = true
+      try {
+        await LNbits.api.request('POST', '/hedge/api/v1/config', key, this.configForm)
+        this.$q.notify({type: 'positive', message: 'Nastavení uloženo a API klíče ověřeny'})
+        this.configDialog = false
+        this.configForm.lnm_key = ''
+        this.configForm.lnm_secret = ''
+        this.configForm.lnm_passphrase = ''
+        await this.loadConfig()
+      } catch (err) {
+        LNbits.utils.notifyApiError(err)
+      } finally {
+        this.configSaving = false
+      }
+    },
+
+    saveWallets: async function () {
+      var key = this.adminKey()
+      if (!key) return
+      this.walletsSaving = true
+      try {
+        await LNbits.api.request('PUT', '/hedge/api/v1/wallets', key, this.selectedWalletIds)
+        this.$q.notify({type: 'positive', message: 'Peněženky uloženy'})
+        this.walletsDialog = false
+        await this.loadWalletStatuses()
+        await this.loadStatus()
+      } catch (err) {
+        LNbits.utils.notifyApiError(err)
+      } finally {
+        this.walletsSaving = false
+      }
+    },
+
+    manualSync: async function () {
+      var key = this.adminKey()
+      if (!key) return
+      this.syncLoading = true
+      try {
+        await LNbits.api.request('POST', '/hedge/api/v1/sync', key)
+        this.$q.notify({type: 'info', message: 'Synchronizace spuštěna'})
+        var self = this
+        setTimeout(function () {
+          self.loadStatus()
+          self.loadEvents()
+        }, 2000)
+      } catch (err) {
+        LNbits.utils.notifyApiError(err)
+      } finally {
+        this.syncLoading = false
+      }
+    },
+
+    exportEvents: function () {
+      LNbits.utils.exportCSV(this.eventsColumns, this.events, 'hedge-events')
+    },
+
+    formatUsd: function (val) {
+      if (val === null || val === undefined) return '-'
+      return '$' + Math.abs(val).toLocaleString('cs-CZ', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+    },
+
+    formatSats: function (val) {
+      if (val === null || val === undefined) return '-'
+      return Math.abs(val).toLocaleString('cs-CZ')
+    },
+
+    formatTime: function (val) {
+      if (!val) return '-'
+      return new Date(val).toLocaleString('cs-CZ')
+    },
+
+    statusColor: function (s) {
+      return {success: 'positive', failed: 'negative', pending: 'warning', skipped: 'grey'}[s] || 'grey'
+    },
+
+    eventIcon: function (t) {
+      return {payment_received: 'arrow_downward', payment_sent: 'arrow_upward', reconciliation: 'sync', error: 'error'}[t] || 'radio_button_unchecked'
+    },
+
+    eventLabel: function (t) {
+      return {payment_received: 'Přijato', payment_sent: 'Odesláno', reconciliation: 'Reconciliation', error: 'Chyba'}[t] || t
     }
-  },
-  ///////////////////////////////////////////////////
-  //////LIFECYCLE FUNCTIONS RUNNING ON PAGE LOAD/////
-  ///////////////////////////////////////////////////
-  async created() {
-    await this.getHedges()
   }
 })

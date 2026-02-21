@@ -1,3 +1,4 @@
+# __init__.py
 import asyncio
 
 from fastapi import APIRouter
@@ -5,21 +6,13 @@ from lnbits.tasks import create_permanent_unique_task
 from loguru import logger
 
 from .crud import db
-from .tasks import wait_for_paid_invoices
+from .tasks import reconciliation_loop, wait_for_paid_invoices
 from .views import hedge_generic_router
 from .views_api import hedge_api_router
-from .views_lnurl import hedge_lnurl_router
-
-logger.debug(
-    "This logged message is from hedge/__init__.py, you can debug in your "
-    "extension using 'import logger from loguru' and 'logger.debug(<thing-to-log>)'."
-)
-
 
 hedge_ext: APIRouter = APIRouter(prefix="/hedge", tags=["Hedge"])
 hedge_ext.include_router(hedge_generic_router)
 hedge_ext.include_router(hedge_api_router)
-hedge_ext.include_router(hedge_lnurl_router)
 
 hedge_static_files = [
     {
@@ -40,8 +33,10 @@ def hedge_stop():
 
 
 def hedge_start():
-    task = create_permanent_unique_task("ext_hedge", wait_for_paid_invoices)
-    scheduled_tasks.append(task)
+    task1 = create_permanent_unique_task("ext_hedge_invoices", wait_for_paid_invoices)
+    task2 = create_permanent_unique_task("ext_hedge_reconcile", reconciliation_loop)
+    scheduled_tasks.extend([task1, task2])
+    logger.info("Hedge extension: invoice listener a reconciliation loop spuštěny")
 
 
 __all__ = [
