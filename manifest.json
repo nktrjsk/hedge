@@ -1,0 +1,9 @@
+{
+  "repos": [
+    {
+      "id": "hedge",
+      "organisation": "lnbits",
+      "repository": "hedge"
+    }
+  ]
+}
