@@ -1,243 +1,303 @@
-<!--/////////////////////////////////////////////////-->
-<!--//PAGE FOR THE EXTENSIONS BACKEND IN LNBITS//////-->
-<!--/////////////////////////////////////////////////-->
+{% extends "base.html" %}
+{% from "macros.jinja" import window_vars with context %}
 
-{% extends "base.html" %} {% from "macros.jinja" import window_vars with context
-%} {% block scripts %} {{ window_vars(user) }}
-<script src="{{ static_url_for('hedge/static', path='js/index.js') }}"></script>
-{% endblock %} {% block page %}
-<div class="row q-col-gutter-md" id="makeItRain">
-  <div class="col-12 col-md-8 col-lg-7 q-gutter-y-md">
-    <q-card>
+{% block scripts %}
+  {{ window_vars(user) }}
+  <script src="{{ static_url_for('hedge/static', path='js/index.js') }}"></script>
+{% endblock %}
+
+{% block page %}
+<div class="row q-col-gutter-md" id="vue">
+
+  <!-- Hlavní sloupec -->
+  <div class="col-12 col-md-8">
+
+    <!-- Status karta -->
+    <q-card class="q-mb-md">
       <q-card-section>
-        <q-btn unelevated color="primary" @click="formDialog.show = true"
-          >New Hedge</q-btn
-        >
+        <div class="row items-center no-wrap q-mb-sm">
+          <div class="col text-h6">Stav hedgu</div>
+          <div class="col-auto">
+            <q-btn flat dense round icon="refresh"
+              :loading="statusLoading" @click="loadStatus" color="grey">
+              <q-tooltip>Obnovit stav</q-tooltip>
+            </q-btn>
+            <q-btn v-if="config" flat dense round icon="sync"
+              :loading="syncLoading" @click="manualSync" color="primary">
+              <q-tooltip>Ruční synchronizace</q-tooltip>
+            </q-btn>
+            <q-btn flat dense round icon="settings"
+              @click="openConfigDialog" color="grey">
+              <q-tooltip>Nastavení LNMarkets</q-tooltip>
+            </q-btn>
+          </div>
+        </div>
+
+        <q-banner v-if="!config" class="bg-warning text-white rounded-borders">
+          <template v-slot:avatar><q-icon name="warning" /></template>
+          Hedge není nakonfigurován.
+          <template v-slot:action>
+            <q-btn flat label="Nastavit" @click="openConfigDialog" />
+          </template>
+        </q-banner>
+
+        <div v-if="status">
+          <div class="row items-center q-mb-md">
+            <q-badge color="positive" label="HEDGE AKTIVNÍ" class="q-mr-sm q-pa-sm" />
+            <q-badge v-if="config && config.testnet" color="warning" label="TESTNET" class="q-pa-sm" />
+          </div>
+
+          <q-banner v-if="status.last_error" class="bg-negative text-white rounded-borders q-mb-md" dense>
+            <template v-slot:avatar><q-icon name="error" /></template>
+            ${ status.last_error }
+          </q-banner>
+
+          <div class="row q-col-gutter-md">
+            <div class="col-6">
+              <q-card flat bordered class="text-center q-pa-md">
+                <div class="text-caption text-grey">BTC/USD cena</div>
+                <div class="text-h6">${ formatUsd(status.btc_price) }</div>
+              </q-card>
+            </div>
+            <div class="col-6">
+              <q-card flat bordered class="text-center q-pa-md">
+                <div class="text-caption text-grey">Celkový zůstatek</div>
+                <div class="text-h6">${ formatUsd(status.total_wallet_usd) }</div>
+                <div class="text-caption text-grey">${ formatSats(status.total_wallet_sats) } sats</div>
+              </q-card>
+            </div>
+            <div class="col-6">
+              <q-card flat bordered class="text-center q-pa-md">
+                <div class="text-caption text-grey">LNM short pozice</div>
+                <div class="text-h6">${ formatUsd(status.lnm_short_usd) }</div>
+              </q-card>
+            </div>
+            <div class="col-6">
+              <q-card flat bordered class="text-center q-pa-md" :class="driftClass">
+                <div class="text-caption text-grey">Drift</div>
+                <div class="text-h6">${ formatUsd(status.drift_usd) }</div>
+                <div class="text-caption">${ status.drift_pct.toFixed(2) }%</div>
+              </q-card>
+            </div>
+          </div>
+
+          <div class="row items-center q-mt-sm text-caption text-grey">
+            <q-icon name="account_balance_wallet" class="q-mr-xs" />
+            LNM kolaterál: ${ formatSats(status.lnm_account_balance_sats) } sats
+          </div>
+
+          <q-banner v-if="status.lnm_account_balance_sats < 50000"
+            class="bg-warning text-white rounded-borders q-mt-sm" dense>
+            <template v-slot:avatar><q-icon name="warning" /></template>
+            Nízký kolaterál na LNMarkets (méně než 50 000 sats).
+          </q-banner>
+
+          <div v-if="status.last_synced" class="text-caption text-grey q-mt-xs">
+            Poslední sync: ${ formatTime(status.last_synced) }
+          </div>
+        </div>
+
+        <q-inner-loading :showing="statusLoading">
+          <q-spinner-dots size="40px" color="primary" />
+        </q-inner-loading>
       </q-card-section>
     </q-card>
 
+    <!-- Hedgované peněženky -->
+    <q-card v-if="config" class="q-mb-md">
+      <q-card-section>
+        <div class="row items-center no-wrap q-mb-md">
+          <div class="col text-h6">Hedgované peněženky</div>
+          <div class="col-auto">
+            <q-btn flat dense round icon="edit" color="grey" @click="openWalletsDialog">
+              <q-tooltip>Upravit výběr</q-tooltip>
+            </q-btn>
+          </div>
+        </div>
+
+        <div v-if="walletStatuses.length === 0" class="text-grey text-caption">
+          Žádné peněženky nejsou hedgovány. Klikněte na ikonu tužky pro výběr.
+        </div>
+
+        <q-list v-else separator>
+          <q-item v-for="ws in walletStatuses" :key="ws.wallet_id" dense>
+            <q-item-section avatar>
+              <q-icon name="account_balance_wallet" color="primary" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label>${ ws.wallet_name }</q-item-label>
+              <q-item-label caption>${ ws.wallet_id.substring(0, 12) }...</q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <q-item-label class="text-right">${ formatUsd(ws.balance_usd) }</q-item-label>
+              <q-item-label caption class="text-right">${ formatSats(ws.balance_sats) } sats</q-item-label>
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </q-card-section>
+    </q-card>
+
+    <!-- Audit log -->
     <q-card>
       <q-card-section>
         <div class="row items-center no-wrap q-mb-md">
-          <div class="col">
-            <h5 class="text-subtitle1 q-my-none">Hedge</h5>
-          </div>
+          <div class="col text-h6">Historie hedge operací</div>
           <div class="col-auto">
-            <q-btn flat color="grey" @click="exportCSV">Export to CSV</q-btn>
+            <q-btn flat color="grey" size="sm" @click="exportEvents">Export CSV</q-btn>
           </div>
         </div>
         <q-table
-          dense
-          flat
-          :rows="myex"
+          dense flat
+          :rows="events"
+          :columns="eventsColumns"
           row-key="id"
-          :columns="myexTable.columns"
-          v-model:pagination="myexTable.pagination"
+          :pagination="{rowsPerPage: 20}"
+          :loading="eventsLoading"
+          no-data-label="Žádné operace zatím"
         >
-          <hedge v-slot:header="props">
-            <q-tr :props="props">
-              <q-th v-for="col in props.cols" :key="col.name" :props="props">
-                ${ col.label }
-              </q-th>
-            </q-tr>
-          </hedge>
-
-          <template v-slot:body="props">
-            <q-tr :props="props">
-              <q-td v-for="col in props.cols" :key="col.name" :props="props">
-                <div v-if="col.field == 'total'">${ col.value / 1000} sats</div>
-                <div v-else>${ col.value }</div>
-              </q-td>
-              <q-td auto-width>
-                <q-btn
-                  unelevated
-                  dense
-                  size="sm"
-                  icon="qr_code"
-                  :color="($q.dark.isActive) ? 'grey-7' : 'grey-5'"
-                  class="q-mr-sm"
-                  @click="openUrlDialog(props.row.id)"
-                ></q-btn
-              ></q-td>
-              <q-td auto-width>
-                <q-btn
-                  unelevated
-                  dense
-                  size="sm"
-                  icon="launch"
-                  :color="($q.dark.isActive) ? 'grey-7' : 'grey-5'"
-                  type="a"
-                  :href="props.row.id"
-                  target="_blank"
-                  ><q-tooltip>Open public page</q-tooltip></q-btn
-                ></q-td
-              >
-
-              <q-td>
-                <q-btn
-                  flat
-                  dense
-                  size="xs"
-                  @click="updateHedgeForm(props.row.id)"
-                  icon="edit"
-                  color="light-blue"
-                >
-                  <q-tooltip> Edit copilot </q-tooltip>
-                </q-btn>
-              </q-td>
-
-              <q-td>
-                <q-btn
-                  flat
-                  dense
-                  size="xs"
-                  @click="deleteHedge(props.row.id)"
-                  icon="cancel"
-                  color="pink"
-                >
-                  <q-tooltip> Delete copilot </q-tooltip>
-                </q-btn>
-              </q-td>
-            </q-tr>
+          <template v-slot:body-cell-status="props">
+            <q-td :props="props">
+              <q-badge :color="statusColor(props.row.status)" :label="props.row.status" />
+            </q-td>
+          </template>
+          <template v-slot:body-cell-event_type="props">
+            <q-td :props="props">
+              <q-icon :name="eventIcon(props.row.event_type)" class="q-mr-xs" />
+              ${ eventLabel(props.row.event_type) }
+            </q-td>
+          </template>
+          <template v-slot:body-cell-sats_delta="props">
+            <q-td :props="props" :class="props.row.sats_delta >= 0 ? 'text-positive' : 'text-negative'">
+              ${ props.row.sats_delta >= 0 ? '+' : '' }${ formatSats(props.row.sats_delta) }
+            </q-td>
+          </template>
+          <template v-slot:body-cell-usd_notional_delta="props">
+            <q-td :props="props">
+              ${ props.row.usd_notional_delta >= 0 ? '+' : '' }${ formatUsd(props.row.usd_notional_delta) }
+            </q-td>
+          </template>
+          <template v-slot:body-cell-error_msg="props">
+            <q-td :props="props">
+              <q-icon v-if="props.row.error_msg" name="info" color="negative">
+                <q-tooltip>${ props.row.error_msg }</q-tooltip>
+              </q-icon>
+            </q-td>
           </template>
         </q-table>
       </q-card-section>
     </q-card>
+
   </div>
 
-  <div class="col-12 col-md-4 col-lg-5 q-gutter-y-md">
+  <!-- Pravý sloupec -->
+  <div class="col-12 col-md-4">
     <q-card>
-      <q-card-section>
-        <h6 class="text-subtitle1 q-my-none">
-          {{SITE_TITLE}} Hedge extension
-        </h6>
-        <p>
-          Simple extension you can use as a base for your own extension. <br />
-          Includes very simple LNURL-pay and LNURL-withdraw example.
-        </p>
-      </q-card-section>
-      <q-card-section class="q-pa-none">
-        <q-separator></q-separator>
-        <q-list>
-          {% include "hedge/_api_docs.html" %}
-          <q-separator></q-separator>
-          {% include "hedge/_hedge.html" %}
-        </q-list>
-      </q-card-section>
+      <q-expansion-item icon="help_outline" label="Jak to funguje?">
+        <q-card-section class="text-body2">
+          <p>Plugin automaticky zajišťuje USD hodnotu BTC zůstatku vybraných peněženek pomocí <strong>short perpetual futures</strong> na LNMarkets.</p>
+          <p><strong>Přijetí platby</strong> — otevře short odpovídající USD hodnotě.</p>
+          <p><strong>Odeslání platby</strong> — uzavře část shortu. Kontrola každou minutu.</p>
+          <q-separator class="q-my-sm" />
+          <p class="text-caption text-grey">Pro hedge je nutný dostatečný BTC zůstatek na LNMarkets jako kolaterál.</p>
+        </q-card-section>
+      </q-expansion-item>
     </q-card>
   </div>
 
-  <!--/////////////////////////////////////////////////-->
-  <!--//////////////FORM DIALOG////////////////////////-->
-  <!--/////////////////////////////////////////////////-->
+  <!-- LNM Config dialog -->
+  <q-dialog v-model="configDialog" persistent>
+    <q-card style="min-width: 400px; max-width: 500px; width: 100%">
+      <q-card-section class="row items-center q-pb-none">
+        <div class="text-h6">Nastavení LNMarkets</div>
+        <q-space />
+        <q-btn icon="close" flat round dense v-close-popup />
+      </q-card-section>
 
-  <q-dialog v-model="formDialog.show" position="top" @hide="closeFormDialog">
-    <q-card class="q-pa-lg q-pt-xl" style="width: 500px">
-      <q-form @submit="sendHedgeData" class="q-gutter-md">
-        <q-input
-          filled
-          dense
-          v-model.trim="formDialog.data.name"
-          label="Name"
-          placeholder="Name for your record"
-        ></q-input>
-        <q-select
-          filled
-          dense
-          emit-value
-          v-model="formDialog.data.wallet"
-          :options="g.user.walletOptions"
-          label="Wallet *"
-        ></q-select>
-        <q-input
-          filled
-          dense
-          type="number"
-          v-model.trim="formDialog.data.lnurlwithdrawamount"
-          label="LNURL-withdraw amount"
-        ></q-input>
-        <q-input
-          filled
-          dense
-          type="number"
-          v-model.trim="formDialog.data.lnurlpayamount"
-          label="LNURL-pay amount"
-        ></q-input>
-        <div class="row q-mt-lg">
-          <q-btn
-            v-if="formDialog.data.id"
-            unelevated
-            color="primary"
-            type="submit"
-            >Update Hedge</q-btn
-          >
-          <q-btn
-            v-else
-            unelevated
-            color="primary"
-            :disable="formDialog.data.name == null || formDialog.data.wallet == null || formDialog.data.lnurlwithdrawamount == null || formDialog.data.lnurlpayamount == null"
-            type="submit"
-            >Create Hedge</q-btn
-          >
-          <q-btn v-close-popup flat color="grey" class="q-ml-auto"
-            >Cancel</q-btn
-          >
-        </div>
-      </q-form>
-    </q-card>
-  </q-dialog>
-
-  <!--/////////////////////////////////////////////////-->
-  <!--//////////////QR Code DIALOG/////////////////////-->
-  <!--/////////////////////////////////////////////////-->
-
-  <q-dialog v-model="urlDialog.show" position="top">
-    <q-card class="q-pa-lg q-pt-xl lnbits__dialog-card">
-
-        <lnbits-qrcode
-          v-if="qrValue && qrValue.startsWith('lnbc')"
-          :value="qrValue"
-        ></lnbits-qrcode>
-        <lnbits-qrcode-lnurl v-else :url="qrValue"></lnbits-qrcode-lnurl>
-
-      <q-separator></q-separator>
-
-      <div class="row justify-start q-mt-lg">
-        <div class="col col-md-auto">
-          <q-btn
-            outline
-            style="color: primmary"
-            @click="qrValue = urlDialog.data.lnurlpay"
-            >lnurlpay</q-btn
-          >
-        </div>
-        <div class="col col-md-auto">
-          <q-btn
-            outline
-            style="color: primmary"
-            @click="qrValue = urlDialog.data.lnurlwithdraw"
-            >lnurlwithdraw</q-btn
-          >
-        </div>
-        <div class="col q-pl-md">
-          <q-input filled bottom-slots dense v-model="invoiceAmount">
+      <q-card-section class="q-pt-md">
+        <div class="q-mb-md">
+          <q-input filled dense v-model.trim="configForm.lnm_key"
+            label="LNM API Key"
+            :type="showSecrets ? 'text' : 'password'" autocomplete="off">
             <template v-slot:append>
-              <q-btn
-                round
-                @click="createInvoice(urlDialog.data.id)"
-                color="primary"
-                flat
-                icon="add_circle"
-              />
+              <q-icon :name="showSecrets ? 'visibility_off' : 'visibility'"
+                class="cursor-pointer" @click="showSecrets = !showSecrets" />
             </template>
-            <template v-slot:hint> Create an invoice </template>
           </q-input>
         </div>
-      </div>
-      <div class="row q-mt-lg">
-        <q-btn v-close-popup flat color="grey" class="q-ml-auto">Close</q-btn>
-      </div>
+        <div class="q-mb-md">
+          <q-input filled dense v-model.trim="configForm.lnm_secret"
+            label="LNM API Secret"
+            :type="showSecrets ? 'text' : 'password'" autocomplete="off" />
+        </div>
+        <div class="q-mb-md">
+          <q-input filled dense v-model.trim="configForm.lnm_passphrase"
+            label="LNM Passphrase"
+            :type="showSecrets ? 'text' : 'password'" autocomplete="off" />
+        </div>
+        <div class="q-mb-md">
+          <q-toggle v-model="configForm.testnet" label="Testnet" color="warning" />
+          <div class="text-caption text-grey">Testnet API (testnet4.lnmarkets.com)</div>
+        </div>
+        <div class="q-mb-sm">
+          <div class="text-caption q-mb-xs">
+            Leverage: <strong>${ configForm.leverage }x</strong>
+            <q-icon name="info" size="xs" class="q-ml-xs text-grey cursor-pointer">
+              <q-tooltip max-width="220px">Vyšší leverage = méně kolaterálu, ale vyšší riziko likvidace. Doporučujeme 2x–5x.</q-tooltip>
+            </q-icon>
+          </div>
+          <q-slider v-model="configForm.leverage" :min="1" :max="10" :step="1" label snap color="primary" />
+          <div class="row justify-between text-caption text-grey">
+            <span>1x</span><span>10x</span>
+          </div>
+        </div>
+      </q-card-section>
+
+      <q-card-actions align="right" class="q-pa-md q-pt-none">
+        <q-btn flat v-close-popup>Zrušit</q-btn>
+        <q-btn unelevated color="primary"
+          :loading="configSaving"
+          :disable="!configForm.lnm_key || !configForm.lnm_secret || !configForm.lnm_passphrase"
+          @click="saveConfig">
+          Uložit a ověřit
+        </q-btn>
+      </q-card-actions>
     </q-card>
   </q-dialog>
+
+  <!-- Wallets dialog -->
+  <q-dialog v-model="walletsDialog">
+    <q-card style="min-width: 380px; max-width: 480px; width: 100%">
+      <q-card-section class="row items-center q-pb-none">
+        <div class="text-h6">Hedgované peněženky</div>
+        <q-space />
+        <q-btn icon="close" flat round dense v-close-popup />
+      </q-card-section>
+
+      <q-card-section>
+        <div class="text-caption text-grey q-mb-md">
+          Vyberte peněženky, jejichž BTC zůstatek chcete hedgovat.
+        </div>
+        <q-list separator>
+          <q-item v-for="w in g.user.wallets" :key="w.id" tag="label" dense clickable>
+            <q-item-section avatar>
+              <q-checkbox v-model="selectedWalletIds" :val="w.id" color="primary" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label>${ w.name }</q-item-label>
+              <q-item-label caption>${ w.id.substring(0, 16) }...</q-item-label>
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </q-card-section>
+
+      <q-card-actions align="right" class="q-pa-md q-pt-none">
+        <q-btn flat v-close-popup>Zrušit</q-btn>
+        <q-btn unelevated color="primary" :loading="walletsSaving" @click="saveWallets">
+          Uložit
+        </q-btn>
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
 </div>
 {% endblock %}

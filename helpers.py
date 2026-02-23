@@ -1,17 +1,11 @@
-# Description: A place for helper functions.
+# helpers.py
+# Pomocné funkce pro extension
 
-from fastapi import Request
-from lnurl.core import encode as lnurl_encode
-
-# The lnurler function is used to generate the lnurlpay and lnurlwithdraw links
-# from the lnurl api endpoints in views_lnurl.py.
-# It needs the Request object to know the url of the LNbits.
-# Lnurler is used in views_api.py
+def sats_to_usd(sats: int, price: float) -> float:
+    """Převede satoshi na USD."""
+    return sats / 100_000_000 * price
 
 
-def lnurler(myex_id: str, route_name: str, req: Request) -> str:
-    url = req.url_for(route_name, hedge_id=myex_id)
-    url_str = str(url)
-    if url.netloc.endswith(".onion"):
-        url_str = url_str.replace("https://", "http://")
-    return str(lnurl_encode(url_str))
+def usd_to_sats(usd: float, price: float) -> int:
+    """Převede USD na satoshi."""
+    return int(usd / price * 100_000_000)
