@@ -45,7 +45,7 @@ async def m003_hedge_settings(db):
             lnm_secret TEXT NOT NULL,
             lnm_passphrase TEXT NOT NULL,
             leverage INTEGER NOT NULL DEFAULT 2,
-            enabled BOOLEAN NOT NULL DEFAULT 0,
+            enabled BOOLEAN NOT NULL DEFAULT FALSE,
             last_synced TIMESTAMP,
             last_error TEXT
         );
@@ -83,7 +83,7 @@ async def m005_add_testnet(db):
     await db.execute(
         """
         ALTER TABLE hedge.settings
-        ADD COLUMN testnet BOOLEAN NOT NULL DEFAULT 0;
+        ADD COLUMN testnet BOOLEAN NOT NULL DEFAULT FALSE;
     """
     )
 
@@ -102,7 +102,7 @@ async def m006_global_settings(db):
             lnm_secret TEXT NOT NULL,
             lnm_passphrase TEXT NOT NULL,
             leverage INTEGER NOT NULL DEFAULT 2,
-            testnet BOOLEAN NOT NULL DEFAULT 0,
+            testnet BOOLEAN NOT NULL DEFAULT FALSE,
             last_synced TIMESTAMP,
             last_error TEXT
         );
@@ -112,7 +112,7 @@ async def m006_global_settings(db):
         """
         CREATE TABLE hedge.hedged_wallets (
             wallet_id TEXT PRIMARY KEY NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT 1
+            enabled BOOLEAN NOT NULL DEFAULT TRUE
         );
         """
     )
