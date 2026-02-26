@@ -148,14 +148,14 @@ async def set_hedged_wallets(wallet_ids: list[str]) -> None:
     await db.execute("DELETE FROM hedge.hedged_wallets", {})
     for wid in wallet_ids:
         await db.execute(
-            "INSERT INTO hedge.hedged_wallets (wallet_id, enabled) VALUES (:wallet_id, 1)",
+            "INSERT INTO hedge.hedged_wallets (wallet_id, enabled) VALUES (:wallet_id, TRUE)",
             {"wallet_id": wid},
         )
 
 
 async def get_all_enabled_hedged_wallet_ids() -> list[str]:
     rows = await db.fetchall(
-        "SELECT wallet_id FROM hedge.hedged_wallets WHERE enabled = 1",
+        "SELECT wallet_id FROM hedge.hedged_wallets WHERE enabled = TRUE",
         model=HedgedWallet,
     )
     return [r.wallet_id for r in rows]
