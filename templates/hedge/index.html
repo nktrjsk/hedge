@@ -157,9 +157,10 @@
             </q-td>
           </template>
           <template v-slot:body-cell-event_type="props">
-            <q-td :props="props">
-              <q-icon :name="eventIcon(props.row.event_type)" class="q-mr-xs" />
-              ${ eventLabel(props.row.event_type) }
+            <q-td :props="props" class="text-center">
+              <q-icon :name="eventIcon(props.row.event_type)" size="sm">
+                <q-tooltip>${ eventLabel(props.row.event_type) }</q-tooltip>
+              </q-icon>
             </q-td>
           </template>
           <template v-slot:body-cell-sats_delta="props">
@@ -180,6 +181,21 @@
             </q-td>
           </template>
         </q-table>
+
+        <div class="q-mt-sm text-caption text-grey row q-gutter-md">
+          <span>
+            <q-icon name="arrow_downward"></q-icon> Přijato
+          </span>
+          <span>
+            <q-icon name="arrow_upward"></q-icon> Odesláno
+          </span>
+          <span>
+            <q-icon name="sync_alt"></q-icon> Ruční sync
+          </span>
+          <span>
+            <q-icon name="error" color="negative"></q-icon> Chyba
+          </span>
+        </div>
       </q-card-section>
     </q-card>
 

@@ -261,11 +261,11 @@ window.app = Vue.createApp({
     },
 
     eventIcon: function (t) {
-      return {payment_received: 'arrow_downward', payment_sent: 'arrow_upward', reconciliation: 'sync', error: 'error'}[t] || 'radio_button_unchecked'
+      return {payment_received: 'arrow_downward', payment_sent: 'arrow_upward', manual_sync: 'sync_alt', reconciliation: 'sync', error: 'error'}[t] || 'radio_button_unchecked'
     },
 
     eventLabel: function (t) {
-      return {payment_received: 'Přijato', payment_sent: 'Odesláno', reconciliation: 'Reconciliation', error: 'Chyba'}[t] || t
+      return {payment_received: 'Přijato', payment_sent: 'Odesláno', manual_sync: 'Ruční sync', reconciliation: 'Reconciliation', error: 'Chyba'}[t] || t
     }
   }
 })
