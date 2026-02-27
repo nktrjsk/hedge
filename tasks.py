@@ -1,7 +1,7 @@
 import asyncio
-from datetime import datetime
+import time
 
-from lnbits.core.crud import get_wallet
+from lnbits.core.crud import get_payments
 from lnbits.core.models import Payment
 from lnbits.tasks import register_invoice_listener
 from loguru import logger
@@ -15,11 +15,13 @@ from .crud import (
 )
 from .lnmarkets import LNMarketsClient, LNMarketsError
 
-RECONCILE_TOLERANCE_USD = 1.0
-RECONCILE_INTERVAL_SEC  = 60
+RECONCILE_INTERVAL_SEC = 60
 
 # Globální lock — hedge má jeden LNM účet, operace musí být serializované
 _global_lock = asyncio.Lock()
+
+# Unix timestamp posledního prověření odchozích plateb
+_last_outgoing_check: int = 0
 
 
 async def wait_for_paid_invoices():
@@ -55,23 +57,63 @@ async def on_payment(payment: Payment) -> None:
 
 
 async def reconciliation_loop():
+    """
+    Každých 60 s zachytí odchozí platby z hedgovaných walletů a sníží short.
+    Příchozí platby jsou zpracovány okamžitě přes invoice listener.
+    Sanity check logika bude doplněna.
+    """
+    global _last_outgoing_check
+    _last_outgoing_check = int(time.time())
     logger.info("Hedge: reconciliation loop spuštěna")
     while True:
         await asyncio.sleep(RECONCILE_INTERVAL_SEC)
         try:
-            config = await get_config()
-            wallet_ids = await get_all_enabled_hedged_wallet_ids()
-            if not config or not wallet_ids:
-                continue
-            asyncio.create_task(reconcile_all())
+            await check_outgoing_payments()
         except Exception as e:
-            logger.error(f"Hedge reconciliation loop chyba: {e}")
+            logger.error(f"Hedge: check_outgoing_payments chyba: {e}")
 
 
-async def reconcile_all() -> None:
+async def check_outgoing_payments() -> None:
+    global _last_outgoing_check
+
+    config = await get_config()
+    if not config:
+        return
+
+    wallet_ids = await get_all_enabled_hedged_wallet_ids()
+    if not wallet_ids:
+        return
+
+    since = _last_outgoing_check
+    _last_outgoing_check = int(time.time())
+
+    for wallet_id in wallet_ids:
+        payments = await get_payments(
+            wallet_id=wallet_id,
+            outgoing=True,
+            complete=True,
+            since=since,
+        )
+        for payment in payments:
+            sats = abs(payment.amount) // 1000
+            if sats == 0:
+                continue
+            logger.info(f"Hedge: odchozí platba wallet={wallet_id[:8]}… -{sats} sats")
+            async with _global_lock:
+                await adjust_hedge(
+                    wallet_id=wallet_id,
+                    sats_delta=-sats,
+                    payment_hash=payment.checking_id,
+                    event_type="payment_sent",
+                )
+
+
+async def manual_sync() -> None:
     """
-    Globální reconciliation — porovná součet všech hedgovaných walletů
-    vůči jedné cross pozici na LNM. Volá se jednou, ne per-wallet.
+    Ruční sync: porovná reálný zůstatek hedgovaných walletů (v sats)
+    s aktuální short pozicí na LNM a dorovná rozdíl.
+    Volá se ze sync tlačítka — není závislé na pohybu ceny,
+    slouží k opravě driftu způsobeného zmeškanými platbami.
     """
     config = await get_config()
     if not config:
@@ -83,6 +125,8 @@ async def reconcile_all() -> None:
 
     async with _global_lock:
         try:
+            from lnbits.core.crud import get_wallet
+
             client = LNMarketsClient(
                 key=config.lnm_key,
                 secret=config.lnm_secret,
@@ -93,51 +137,53 @@ async def reconcile_all() -> None:
             price   = await client.get_price()
             summary = await client.get_account_summary()
 
-            # Součet všech hedgovaných walletů
             total_sats = 0
             for wid in wallet_ids:
                 w = await get_wallet(wid)
                 if w:
                     total_sats += w.balance_msat // 1000
 
-            total_usd         = total_sats / 100_000_000 * price
-            current_short_usd = summary.total_short_usd
-            drift_usd         = total_usd - current_short_usd
+            target_usd      = total_sats / 100_000_000 * price
+            current_short   = summary.total_short_usd
+            drift_usd       = target_usd - current_short
 
-            logger.debug(
-                f"Reconcile: total_wallets={total_usd:.2f} USD, "
-                f"short={current_short_usd:.2f} USD, "
-                f"drift={drift_usd:+.2f} USD"
+            logger.info(
+                f"Manual sync: wallet={target_usd:.2f} USD, "
+                f"short={current_short:.2f} USD, drift={drift_usd:+.2f} USD"
             )
 
-            if abs(drift_usd) < RECONCILE_TOLERANCE_USD:
+            # Prázdný wallet → zavřít celou pozici najednou (obejde double rounding)
+            if total_sats == 0 and current_short > 0:
+                logger.info("Manual sync: wallet prázdný, zavírám celou pozici")
+                await client.close_position()
                 await update_config_sync(last_error=None)
                 return
 
-            # Použijeme první wallet jako "zdroj" pro audit log
-            anchor_wallet_id = wallet_ids[0]
+            if abs(drift_usd) < 1.0:
+                await update_config_sync(last_error=None)
+                return
+
             sats_delta = int(abs(drift_usd) / price * 100_000_000)
             if drift_usd < 0:
                 sats_delta = -sats_delta
 
             await adjust_hedge(
-                wallet_id=anchor_wallet_id,
+                wallet_id=wallet_ids[0],
                 sats_delta=sats_delta,
                 payment_hash=None,
-                event_type="reconciliation",
+                event_type="manual_sync",
                 _price_override=price,
                 _client=client,
             )
 
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Reconcile selhalo: {error_msg}")
-            await update_config_sync(last_error=error_msg)
+            logger.error(f"Manual sync selhalo: {e}")
+            await update_config_sync(last_error=str(e))
 
 
-# Zpětná kompatibilita pro views_api.py (manual sync)
+# Stub zachován pro zpětnou kompatibilitu
 async def reconcile_wallet(wallet_id: str) -> None:
-    await reconcile_all()
+    pass
 
 
 async def adjust_hedge(

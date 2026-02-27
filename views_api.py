@@ -209,8 +209,8 @@ async def api_wallet_statuses(
 async def api_manual_sync(
     wallet: WalletTypeInfo = Depends(require_admin_key),
 ) -> dict:
-    from .tasks import reconcile_wallet
     import asyncio
+    from .tasks import manual_sync
 
     config = await get_config()
     if not config:
@@ -219,9 +219,7 @@ async def api_manual_sync(
             detail="Hedge není nakonfigurován",
         )
 
-    hedged_ids = await get_all_enabled_hedged_wallet_ids()
-    for wid in hedged_ids:
-        asyncio.create_task(reconcile_wallet(wid))
+    asyncio.create_task(manual_sync())
     return {"status": "ok"}
 
 
