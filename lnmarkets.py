@@ -123,8 +123,18 @@ class LNMarketsClient:
             )
 
         if not resp.is_success:
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("message") or err_body.get("error") or resp.text
+            except Exception:
+                err_msg = resp.text
+            err_lower = err_msg.lower()
+            if any(k in err_lower for k in ("insufficient", "margin", "balance", "funds", "collateral")):
+                raise LNMarketsError(
+                    f"Nedostatečný kolaterál na LNMarkets — vložte více BTC do cross margin účtu. ({err_msg})"
+                )
             raise LNMarketsError(
-                f"LNM {method_upper} {endpoint} → HTTP {resp.status_code}: {resp.text}"
+                f"LNM {method_upper} {endpoint} → HTTP {resp.status_code}: {err_msg}"
             )
 
         # Prázdná odpověď (204 apod.)
@@ -191,26 +201,27 @@ class LNMarketsClient:
             logger.debug(f"LNM: get_position selhalo (asi žádná pozice): {e}")
             pos = {}
 
-        total_short_usd = 0.0
-        margin_used     = 0
-        unrealized_pl   = 0
+        total_short_usd    = 0.0
+        free_collateral_sats = 0
+        unrealized_pl      = 0
 
         if pos:
-            # quantity je vždy kladné číslo reprezentující USD notional
-            # Směr pozice se určuje z toho, jaké ordery byly zadány (buy/sell)
-            # Pro nás: pokud máme otevřené sell ordery, quantity > 0 a pozice je short
-            # GET /futures/cross/position nevrací `side` přímo — quantity je signed
-            # Záporné quantity = short (sell), kladné = long (buy) dle API chování
+            # quantity: záporné = short (sell), kladné = long (buy)
             quantity = float(pos.get("quantity", 0) or 0)
             if quantity < 0:
                 total_short_usd = abs(quantity)
-            # margin = cross margin balance (kolaterál v cross účtu)
-            margin_used   = int(pos.get("margin", 0) or 0)
+            # margin            = celkový margin v cross účtu (sats)
+            # maintenanceMargin = minimum pro udržení pozice před likvidací (sats)
+            # volný kolaterál   = buffer před likvidací
+            total_margin       = int(pos.get("margin", 0) or 0)
+            running_margin     = int(pos.get("runningMargin", 0) or 0)
+            maintenance_margin = int(pos.get("maintenanceMargin", 0) or 0)
+            free_collateral_sats = max(0, total_margin - (running_margin + maintenance_margin))
             unrealized_pl = int(pos.get("totalPl", 0) or 0)
 
         return LNMAccountSummary(
             balance=balance,
-            margin_used=margin_used,
+            free_collateral_sats=free_collateral_sats,
             unrealized_pl=unrealized_pl,
             total_short_usd=total_short_usd,
         )

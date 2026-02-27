@@ -151,6 +151,8 @@ async def api_get_status(
     return HedgeStatus(
         configured=True,
         lnm_account_balance_sats=summary.balance,
+        lnm_free_collateral_usd=round(summary.free_collateral_sats / 100_000_000 * price, 2),
+        lnm_free_collateral_sats=summary.free_collateral_sats,
         btc_price=price,
         total_wallet_sats=total_sats,
         total_wallet_usd=round(total_usd, 2),

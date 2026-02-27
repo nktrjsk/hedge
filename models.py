@@ -76,7 +76,7 @@ class HedgeEvent(BaseModel):
 
 class LNMAccountSummary(BaseModel):
     balance: int
-    margin_used: int
+    free_collateral_sats: int = 0
     unrealized_pl: int
     total_short_usd: float
 
@@ -85,6 +85,8 @@ class HedgeStatus(BaseModel):
     """Celkový stav hedgu — agregát přes všechny hedgované wallety."""
     configured: bool
     lnm_account_balance_sats: int
+    lnm_free_collateral_usd: float = 0.0
+    lnm_free_collateral_sats: int = 0
     btc_price: float
     total_wallet_sats: int
     total_wallet_usd: float
