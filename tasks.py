@@ -40,6 +40,27 @@ async def on_payment(payment: Payment) -> None:
     if not hw or not hw.enabled:
         return
 
+    # Interní platba: pokud odesílatel je také hedgovaná peněženka,
+    # celkový sats zůstatek se nemění → přeskočit oba konce
+    if payment.checking_id.startswith("internal_"):
+        hedged_ids = await get_all_enabled_hedged_wallet_ids()
+        for wid in hedged_ids:
+            if wid == wallet_id:
+                continue
+            sender_payments = await get_payments(
+                wallet_id=wid,
+                outgoing=True,
+                complete=True,
+                since=int(time.time()) - 300,
+            )
+            for p in sender_payments:
+                if p.checking_id == payment.checking_id:
+                    logger.info(
+                        f"Hedge: interní platba mezi hedgovanými peněženkami "
+                        f"({wid[:8]}…→{wallet_id[:8]}…), přeskakuji"
+                    )
+                    return
+
     config = await get_config()
     if not config:
         return
@@ -87,6 +108,20 @@ async def check_outgoing_payments() -> None:
     since = _last_outgoing_check
     _last_outgoing_check = int(time.time())
 
+    # Zjisti checking_id všech interních příchozích plateb do hedgovaných peněženek
+    # v tomto okně — odchozí stranu těchto plateb přeskočíme (příjemce je hedgovaný)
+    internal_incoming_ids: set[str] = set()
+    for wid in wallet_ids:
+        incoming = await get_payments(
+            wallet_id=wid,
+            incoming=True,
+            complete=True,
+            since=since,
+        )
+        for p in incoming:
+            if p.checking_id.startswith("internal_"):
+                internal_incoming_ids.add(p.checking_id)
+
     for wallet_id in wallet_ids:
         payments = await get_payments(
             wallet_id=wallet_id,
@@ -97,6 +132,13 @@ async def check_outgoing_payments() -> None:
         for payment in payments:
             sats = abs(payment.amount) // 1000
             if sats == 0:
+                continue
+            # Interní platba do jiné hedgované peněženky → celkový zůstatek nezměněn
+            if payment.checking_id in internal_incoming_ids:
+                logger.info(
+                    f"Hedge: přeskakuji interní odchozí platbu "
+                    f"wallet={wallet_id[:8]}… (příjemce je hedgovaná peněženka)"
+                )
                 continue
             logger.info(f"Hedge: odchozí platba wallet={wallet_id[:8]}… -{sats} sats")
             async with _global_lock:
