@@ -55,8 +55,8 @@
           <div class="row q-col-gutter-md">
             <div class="col-6">
               <q-card flat bordered class="text-center q-pa-md">
-                <div class="text-caption text-grey">BTC/USD cena</div>
-                <div class="text-h6">${ formatUsd(status.btc_price) }</div>
+                <div class="text-caption text-grey">Likvidační cena</div>
+                <div class="text-h6">${ status.lnm_liquidation_price > 0 ? formatUsd(status.lnm_liquidation_price) : '-' }</div>
               </q-card>
             </div>
             <div class="col-6">
@@ -82,8 +82,9 @@
           </div>
 
           <div class="row items-center q-mt-sm text-caption text-grey">
-	    <q-icon name="account_balance_wallet" class="q-mr-xs"></q-icon>
+            <q-icon name="account_balance_wallet" class="q-mr-xs"></q-icon>
             Cross collateral: ${ formatUsd(status.lnm_free_collateral_usd || 0) } (${ formatSats(status.lnm_free_collateral_sats || 0) } sats)
+            &nbsp;·&nbsp; BTC/USD: ${ formatUsd(status.btc_price) }
           </div>
 
 

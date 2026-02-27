@@ -79,6 +79,7 @@ class LNMAccountSummary(BaseModel):
     free_collateral_sats: int = 0
     unrealized_pl: int
     total_short_usd: float
+    liquidation_price: float = 0.0
 
 
 class HedgeStatus(BaseModel):
@@ -87,6 +88,7 @@ class HedgeStatus(BaseModel):
     lnm_account_balance_sats: int
     lnm_free_collateral_usd: float = 0.0
     lnm_free_collateral_sats: int = 0
+    lnm_liquidation_price: float = 0.0
     btc_price: float
     total_wallet_sats: int
     total_wallet_usd: float

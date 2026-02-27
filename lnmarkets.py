@@ -201,9 +201,10 @@ class LNMarketsClient:
             logger.debug(f"LNM: get_position selhalo (asi žádná pozice): {e}")
             pos = {}
 
-        total_short_usd    = 0.0
+        total_short_usd      = 0.0
         free_collateral_sats = 0
-        unrealized_pl      = 0
+        unrealized_pl        = 0
+        liquidation_price    = 0.0
 
         if pos:
             # quantity: záporné = short (sell), kladné = long (buy)
@@ -218,12 +219,14 @@ class LNMarketsClient:
             maintenance_margin = int(pos.get("maintenanceMargin", 0) or 0)
             free_collateral_sats = max(0, total_margin - (running_margin + maintenance_margin))
             unrealized_pl = int(pos.get("totalPl", 0) or 0)
+            liquidation_price = float(pos.get("liquidation", 0) or 0)
 
         return LNMAccountSummary(
             balance=balance,
             free_collateral_sats=free_collateral_sats,
             unrealized_pl=unrealized_pl,
             total_short_usd=total_short_usd,
+            liquidation_price=liquidation_price,
         )
 
     # ── Cross futures ─────────────────────────────────────────────────────────
