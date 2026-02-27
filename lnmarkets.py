@@ -276,7 +276,9 @@ class LNMarketsClient:
                 f"Minimum je {LNM_MIN_QUANTITY_USD} USD, požadováno {usd_quantity:.4f} USD"
             )
 
-        quantity_int = int(usd_quantity)
+        quantity_int = round(usd_quantity)
+        if quantity_int < 1:
+            quantity_int = 1
         payload = {"type": "market", "side": "buy", "quantity": quantity_int}
         logger.info(f"LNM: reduce short o {quantity_int} USD")
 
