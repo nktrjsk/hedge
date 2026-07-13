@@ -64,6 +64,27 @@ LNbits is the first client because it hands us a server for free — custodial b
 background-task framework, and an invoice listener. Linky is a **later** client of the same
 wallet-agnostic API; its Cashu/mint custody and Nostr identity will need bridging at that point.
 
+### 3.1 Responsibility split (the trust boundary)
+
+| | Holds | Decides / does |
+|---|---|---|
+| **Engine** | venue API keys | when/how much to hedge, margin, deleverage; the ledger; reconciliation |
+| **Client** (e.g. LNbits ext) | wallet custody keys | executes sat movements **on the engine's instruction**; renders USD balance |
+
+The engine **never holds wallet custody credentials.** When margin must move, the engine instructs
+(*"pay X sats to this venue deposit invoice"* / *"expect a withdrawal"*) and the client performs
+the payment with its own keys and reports back. This keeps wallet custody on the wallet side and
+venue custody on the engine side.
+
+### 3.2 Client ↔ engine contract
+
+- **Transport:** **REST** for commands (open / adjust / close / quote / status); **WebSocket push**
+  from engine → client for balance, health, and alert updates (no polling). LNbits already speaks
+  WebSocket, which the client relays to the user UI.
+- **Auth:** a **per-deployment credential** authenticates the client; every request carries a
+  **per-user scoped token/ID** so a compromised client can't act across users it shouldn't.
+  Requests are HMAC-signed. (Fits the operator-runs-both deployment.)
+
 ## 4. Custody model — an operator choice
 
 Custody has two legs, and they are decided independently:
@@ -100,6 +121,17 @@ exfiltrate funds to an attacker's address.
 - **Dynamic margining to a health ratio.** A safe **default** ships out of the box; a **hidden
   advanced control** lets power users adjust; a **hard floor** exists that no user can cross, so
   nobody can configure themselves into guaranteed liquidation. Most users never see this.
+- **Default parameters (Balanced, ~3x effective):**
+  - **Target:** keep the liquidation price **~+33%** above spot.
+  - **Top-up trigger:** add margin when the move-to-liquidation narrows to **~+22%**; **reclaim**
+    margin back to the buffer once it widens past **~+28%** (hysteresis to avoid churn).
+  - **Hard floor:** **+15%** — no user config may place liquidation closer than this.
+
+  Note the trade-off this encodes: a farther liquidation point means more margin parked at the
+  venue, so this default *is* the steady-state venue custody exposure (~1/3 of the hedged sats).
+- **Cadence / triggers.** Adjust the hedge **immediately** on deposit/spend; monitor margin health
+  on **every price tick** and act on the trigger above; run a full ledger **reconcile every ~60s**
+  (§9). Only trade when drift exceeds **max($1, 1% of wallet)** to avoid dust churn (§10).
 
 ## 6. Liquidation backstop
 
@@ -124,7 +156,9 @@ recoverable failure.
   can even earn carry. Nothing about funding is hidden or smoothed over.
 - **Erosion policy.** When cumulative funding erosion crosses a threshold, the engine **alerts the
   user and lets them decide** whether to unwind. It never silently auto-closes a user's hedge —
-  re-exposing them to BTC price is their call, not ours.
+  re-exposing them to BTC price is their call, not ours. Defaults: first alert at **−2%** of
+  principal, escalated alert + unwind prompt at **−5%**. (BTC perps are often in contango, so shorts
+  frequently *earn* funding; sustained erosion is the rarer backwardation case.)
 - **Event-sourced ledger.** Every deposit, spend, trade, and funding payment is an append-only
   event; balances are *derived*, never mutated in place. This ledger *is* the no-bleed guarantee:
   any deviation from the promised USD must be fully explained by named events. An unexplained
@@ -136,10 +170,12 @@ recoverable failure.
 ## 8. Price & oracle
 
 - **An independent, aggregated oracle is the source of truth** for accounting and the displayed
-  balance — not gameable by any single venue, and provider-agnostic by construction.
+  balance — not gameable by any single venue, and provider-agnostic by construction. Default:
+  **median of 3–4 major spot venues** (e.g. Coinbase, Kraken, Bitstamp, Binance).
 - The **venue mark price is used only to size and settle** the actual trade.
-- If the two **diverge beyond a bound, trading halts** (the price-sanity check) rather than acting
-  on a bad or manipulated price.
+- **Divergence handling:** if the venue mark diverges **>~1%** from the oracle, **trading halts**
+  (the price-sanity check) rather than acting on a bad or manipulated price. If the oracle's own
+  sources disagree by **>~0.5%**, drop outliers before taking the median.
 
 ## 9. Reconciliation & safe-mode
 
@@ -179,12 +215,17 @@ is out of scope.
 
 ## 12. Open questions (to resolve during implementation)
 
-- Concrete values: default health ratio, the hard floor, erosion alert threshold, rebalance
-  cadence and drift trigger.
-- Oracle source(s) and the exact divergence bound that halts trading.
-- Client ↔ engine API shape and authentication.
-- Position granularity: one isolated trade per hedged wallet vs. per user (does a user with
-  multiple hedged wallets get one trade or several?).
+Parameters and interfaces are now specified inline (§3.1–3.2, §5, §7, §8). Genuinely still open:
+
+- **Business model for shared mode** — does the operator charge a spread/fee to cover its capital,
+  funding variance, and operational risk? (Bring-your-own has no operator capital at stake.)
+- **Exact oracle venue list** and failover behaviour when a source is down or rate-limited.
+- **Linky bridging** — how Cashu/mint custody and Nostr identity map onto the client contract
+  (§3.1) when Linky becomes a client.
+- **Onboarding for bring-your-own** — the UX of linking a venue account and issuing trade-only,
+  withdrawal-whitelisted keys with the least friction.
+- **Test/validation strategy** — how we exercise the margin/liquidation logic against realistic
+  price paths before touching real funds (e.g. against LNMarkets testnet4).
 
 ## 13. Biggest risks
 
