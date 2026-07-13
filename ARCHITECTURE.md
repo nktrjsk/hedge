@@ -183,7 +183,8 @@ is out of scope.
   cadence and drift trigger.
 - Oracle source(s) and the exact divergence bound that halts trading.
 - Client ↔ engine API shape and authentication.
-- **Per-user margin isolation in shared-account mode** (see §13).
+- Position granularity: one isolated trade per hedged wallet vs. per user (does a user with
+  multiple hedged wallets get one trade or several?).
 
 ## 13. Biggest risks
 
