@@ -2,3 +2,8 @@ __pycache__
 node_modules
 .mypy_cache
 .venv
+
+# Local scratch / secrets — never commit
+lnm_api_test.py
+lnm_api_test.env
+*.env
